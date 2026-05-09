@@ -1,0 +1,32 @@
+{
+  "objective": "",
+  "resources": {
+    "youtube": [
+      {
+        "title": "C programming language operators (arithmetic, relational, logical, bitwise, assignment)",
+        "url": "https://www.youtube.com/results?search_query=C%20programming%20language%20operators%20(arithmetic%2C%20relational%2C%20logical%2C%20bitwise%2C%20assignment)"
+      },
+      {
+        "title": "C Arithmetic Operators Explained",
+        "url": "https://www.youtube.com/results?search_query=C%20Arithmetic%20Operators%20Explained"
+      },
+      {
+        "title": "Logical Operators in C - Neso Academy",
+        "url": "https://www.youtube.com/results?search_query=Logical%20Operators%20in%20C%20-%20Neso%20Academy"
+      }
+    ],
+    "websites": [
+      {
+        "title": "operators in C programming language Reference",
+        "url": "https://www.google.com/search?q=C%20programming%20language%20%20operators%20in%20C%20programming%20language%20reference%20C%20programming%20language%20%20operators%20in%20C%20programming%20language"
+      },
+      {
+        "title": "operators in C programming language Tutorial",
+        "url": "https://www.google.com/search?q=C%20programming%20language%20%20operators%20in%20C%20programming%20language%20tutorial%20C%20programming%20language%20%20operators%20in%20C%20programming%20language"
+      }
+    ]
+  },
+  "studyGuide": "",
+  "summary": "",
+  "keywords": []
+}
