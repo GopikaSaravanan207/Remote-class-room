@@ -10,8 +10,8 @@ import fs from 'fs';
 import JSZip from 'jszip';
 import { GoogleGenAI } from '@google/genai';
 import admin from 'firebase-admin';
-import firebaseConfig from './firebase-applet-config.json' assert { type: 'json' };
-import serviceAccount from './class-room-a05da-firebase-adminsdk-fbsvc-d78f73661e.json' assert { type: 'json' };
+import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
+import serviceAccount from './class-room-a05da-firebase-adminsdk-fbsvc-d78f73661e.json' with { type: 'json' };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -699,16 +699,11 @@ db.prepare('INSERT INTO materials (staff_id, department, subject, topic, descrip
         `).all(req.user.id) as Array<any>;
       }
 
-      // Fallback: if staff has no matched progress (maybe questions missing staff_id), return recent progress across the board
+      // If staff has no matched progress, return empty list (so new staff sees 0 activity)
       if (!rows || rows.length === 0) {
-        rows = db.prepare(`
-          SELECT p.student_id, q.topic, p.score, p.timestamp as status
-          FROM progress p
-          JOIN questions q ON p.question_id = q.id
-          ORDER BY p.timestamp DESC
-          LIMIT 20
-        `).all() as Array<any>;
+        rows = [];
       }
+
 
       // Enrich with student name by fetching from local cache or Firestore
       const uniqueStudentIds = Array.from(new Set(rows.map(r => r.student_id).filter(Boolean)));
@@ -1116,10 +1111,38 @@ res.json({ message: 'All notifications marked as read' });
       });
   });
 
-  app.get('/api/student/questions', authenticateToken, (req: any, res) => {
+  app.get('/api/student/questions', authenticateToken, async (req: any, res) => {
     if (req.user.role !== 'student') return res.sendStatus(403);
-    const questions = db.prepare('SELECT id, subject, topic, question_text, option_a, option_b, option_c, option_d FROM questions').all();
-    res.json(questions);
+
+    // Return only questions uploaded by the student's department/subject.
+    // Students should see quizzes for their own course/stream.
+    const studentSubject = String(req.user.course || req.user.subject || '').trim();
+    const studentDepartment = String(req.user.department || '').trim();
+
+    try {
+      let questions: any[] = [];
+
+      // Filtering logic:
+      // - Staff uploads questions with `subject` and `topic`.
+      // - For students, we must match the student's assigned `course` (or `subject`).
+      // - If course/subject is not present, we do NOT fall back to department here,
+      //   because questions are not stored with department in the database schema.
+      if (studentSubject) {
+        questions = db.prepare(
+          `SELECT id, subject, topic, question_text, option_a, option_b, option_c, option_d
+           FROM questions
+           WHERE LOWER(subject) = LOWER(?)
+           ORDER BY id DESC`
+        ).all(studentSubject);
+      } else {
+        questions = [];
+      }
+
+      res.json(questions || []);
+    } catch (e) {
+      console.error('Failed to fetch student questions:', e);
+      res.status(500).json({ error: 'Failed to fetch questions' });
+    }
   });
 
   app.post('/api/student/submit-answer', authenticateToken, (req: any, res) => {

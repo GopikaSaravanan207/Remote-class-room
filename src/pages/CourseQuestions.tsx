@@ -5,6 +5,7 @@ import { Question } from '../types';
 
 export default function CourseQuestions() {
   const { subject } = useParams<{ subject: string }>();
+  const routeSubject = (subject || '').trim();
   const navigate = useNavigate();
   const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading] = useState(true);
@@ -17,7 +18,9 @@ export default function CourseQuestions() {
       setLoading(true);
       try {
         const all = await api.student.getQuestions();
-        const filtered = all.filter((q: Question) => ((q.subject || '').trim().toLowerCase()) === (subject || '').trim().toLowerCase());
+        const routeSubject = (subject || '').trim().toLowerCase();
+        const filtered = all.filter((q: Question) => ((q.subject || '').trim().toLowerCase()) === routeSubject);
+        console.log('[CourseQuestions] routeSubject', routeSubject, 'questions', all.length, 'filtered', filtered.length);
         setQuestions(filtered);
         setAnswers({});
         setCurrentIndex(0);
@@ -82,7 +85,7 @@ export default function CourseQuestions() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <button className="text-orange-600 mb-1" onClick={() => navigate(-1)}>← Back</button>
-          <h1 className="text-2xl font-bold">{subject}</h1>
+          <h1 className="text-2xl font-bold">{routeSubject}</h1>
           <p className="text-sm text-slate-500">Question {currentIndex + 1} of {total}</p>
         </div>
         <div className="w-40">

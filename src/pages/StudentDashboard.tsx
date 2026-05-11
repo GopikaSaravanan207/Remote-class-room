@@ -204,7 +204,9 @@ const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
 
   const filteredQuestions = questions.filter((q) => {
     if (questionSubjectFilter === 'all') return true;
-    return (q.subject || '').trim().toLowerCase() === questionSubjectFilter.toLowerCase();
+    const qSubject = (q.subject || '').trim().toLowerCase();
+    const filter = questionSubjectFilter.toLowerCase().trim();
+    return qSubject === filter;
   });
 
   const groupedQuestions = filteredQuestions.reduce<Record<string, Question[]>>((acc, q) => {
@@ -841,7 +843,10 @@ const groupedAiEntries = Object.entries(groupedAiMaterials).sort((a, b) => a[0].
                         </div>
                       <div className="mt-4 flex justify-end">
                         <button
-                          onClick={() => navigate(`/course/${encodeURIComponent(subject)}`)}
+                          onClick={() => {
+                            console.log('[StudentDashboard] open assessment subject', subject);
+                            navigate(`/course/${encodeURIComponent((subject || '').trim())}`);
+                          }}
                           className="px-4 py-2 bg-orange-600 text-white text-sm font-semibold rounded-lg hover:bg-orange-700 transition-colors"
                         >
                           Open Assessment
