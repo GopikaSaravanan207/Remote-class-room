@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { BookOpen, Search, Filter, PlayCircle, Globe, File, ExternalLink, Download } from 'lucide-react';
+import { BookOpen, Search, Filter, PlayCircle, Globe, File, ExternalLink, Download, Video } from 'lucide-react';
 import { api } from '../api';
 import { Material } from '../types';
 
@@ -55,6 +55,40 @@ export default function ViewMaterials() {
     } catch (err) {
       console.error('Download failed', err);
       alert('Download failed. Please try again.');
+    }
+  };
+
+  const handleDownloadVideo = async (m: Material) => {
+    try {
+      const blob = await api.student.downloadVideo(m.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${m.topic.replace(/[^a-z0-9-_]/gi, '-')}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Video download failed', err);
+      alert('Failed to download video. Please try again.');
+    }
+  };
+
+  const handleDownloadTranscript = async (m: Material) => {
+    try {
+      const blob = await api.student.downloadTranscript(m.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${m.topic.replace(/[^a-z0-9-_]/gi, '-')}_transcript.txt`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Transcript download failed', err);
+      alert('Transcript is not yet available. Please try again later.');
     }
   };
 
@@ -118,6 +152,7 @@ export default function ViewMaterials() {
               <option value="pdf">PDFs</option>
               <option value="youtube">Videos</option>
               <option value="website">Websites</option>
+              <option value="staff_video">Staff Videos with Transcripts</option>
               <option value="zip">Archives</option>
             </select>
           </div>
@@ -169,6 +204,7 @@ export default function ViewMaterials() {
                     <div className={`h-2 ${
                       m.resource_type === 'youtube' ? 'bg-red-500' :
                       m.resource_type === 'website' ? 'bg-blue-500' :
+                      m.resource_type === 'staff_video' ? 'bg-purple-500' :
                       'bg-indigo-500'
                     }`} />
 
@@ -178,10 +214,12 @@ export default function ViewMaterials() {
                         <div className={`p-2 rounded-lg ${
                           m.resource_type === 'youtube' ? 'bg-red-50 text-red-600' :
                           m.resource_type === 'website' ? 'bg-blue-50 text-blue-600' :
+                          m.resource_type === 'staff_video' ? 'bg-purple-50 text-purple-600' :
                           'bg-indigo-50 text-indigo-600'
                         }`}>
                           {m.resource_type === 'youtube' ? <PlayCircle size={18} /> :
                            m.resource_type === 'website' ? <Globe size={18} /> :
+                           m.resource_type === 'staff_video' ? <Video size={18} /> :
                            <File size={18} />}
                         </div>
                       </div>
@@ -195,20 +233,43 @@ export default function ViewMaterials() {
                       )}
 
                       <div className="flex gap-2">
-                        <button
-                          onClick={() => handleAccess(m)}
-                          className="flex-1 flex items-center justify-center gap-2 py-3 bg-slate-50 text-slate-700 font-bold rounded-xl hover:bg-indigo-600 hover:text-white transition-all group"
-                        >
-                          Access
-                          <ExternalLink size={16} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
-                        </button>
-                        <button
-                          onClick={() => handleDownload(m)}
-                          className="px-4 py-3 bg-emerald-50 text-emerald-700 rounded-xl hover:bg-emerald-100 transition-colors"
-                          title="Download ZIP"
-                        >
-                          <Download size={16} />
-                        </button>
+                        {m.resource_type === 'staff_video' ? (
+                          <>
+                            <button
+                              onClick={() => handleDownloadVideo(m)}
+                              className="flex-1 flex items-center justify-center gap-2 py-3 bg-purple-50 text-purple-700 font-bold rounded-xl hover:bg-purple-600 hover:text-white transition-all"
+                              title="Download Video"
+                            >
+                              <Download size={16} />
+                              Video
+                            </button>
+                            <button
+                              onClick={() => handleDownloadTranscript(m)}
+                              className="flex-1 flex items-center justify-center gap-2 py-3 bg-amber-50 text-amber-700 font-bold rounded-xl hover:bg-amber-600 hover:text-white transition-all"
+                              title="Download Transcript"
+                            >
+                              <Download size={16} />
+                              Text
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => handleAccess(m)}
+                              className="flex-1 flex items-center justify-center gap-2 py-3 bg-slate-50 text-slate-700 font-bold rounded-xl hover:bg-indigo-600 hover:text-white transition-all group"
+                            >
+                              Access
+                              <ExternalLink size={16} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
+                            </button>
+                            <button
+                              onClick={() => handleDownload(m)}
+                              className="px-4 py-3 bg-emerald-50 text-emerald-700 rounded-xl hover:bg-emerald-100 transition-colors"
+                              title="Download ZIP"
+                            >
+                              <Download size={16} />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
 

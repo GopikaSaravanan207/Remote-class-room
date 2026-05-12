@@ -55,6 +55,22 @@ export const api = {
       if (!res.ok) throw new Error('Failed to download material');
       return res.blob();
     },
+    downloadVideo: async (id: number) => {
+      const res = await fetch(`${API_BASE}/student/materials/${id}/download-video`, {
+        method: 'GET',
+        headers: await getHeaders(),
+      });
+      if (!res.ok) throw new Error('Failed to download video');
+      return res.blob();
+    },
+    downloadTranscript: async (id: number) => {
+      const res = await fetch(`${API_BASE}/student/materials/${id}/transcript`, {
+        method: 'GET',
+        headers: await getHeaders(),
+      });
+      if (!res.ok) throw new Error('Failed to download transcript');
+      return res.blob();
+    },
     getQuestions: async () => fetch(`${API_BASE}/student/questions`, { headers: await getHeaders() }).then(res => res.json()),
     submitAnswer: async (data: any) => fetch(`${API_BASE}/student/submit-answer`, {
       method: 'POST',

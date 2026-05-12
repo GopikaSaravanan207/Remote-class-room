@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Upload, Link as LinkIcon, FileText, Youtube, Globe, BrainCircuit, CheckCircle2 } from 'lucide-react';
+import { Upload, Link as LinkIcon, FileText, Youtube, Globe, BrainCircuit, CheckCircle2, Video } from 'lucide-react';
 import { api } from '../api';
 import { aiService } from '../services/aiService';
 
@@ -54,6 +54,7 @@ export default function UploadMaterial() {
     { id: 'pdf', label: 'PDF Document', icon: FileText },
     { id: 'youtube', label: 'YouTube Video', icon: Youtube },
     { id: 'website', label: 'Educational Website', icon: Globe },
+    { id: 'staff_video', label: 'Staff Video (with Transcript)', icon: Video },
     { id: 'image', label: 'Image File', icon: Upload },
     { id: 'video', label: 'Video File', icon: Upload },
     { id: 'zip', label: 'ZIP Archive', icon: Upload },
@@ -150,6 +151,26 @@ export default function UploadMaterial() {
                     className="w-full pl-12 pr-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
                     placeholder="https://..."
                   />
+                </div>
+              </div>
+            ) : formData.resource_type === 'staff_video' ? (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Upload Video File</label>
+                <div className="border-2 border-dashed border-slate-200 rounded-2xl p-8 text-center hover:border-purple-300 transition-all cursor-pointer relative">
+                  <input
+                    type="file"
+                    required
+                    accept="video/mp4,video/x-msvideo,video/quicktime,.mp4,.avi,.mov"
+                    onChange={(e) => setFile(e.target.files?.[0] || null)}
+                    className="absolute inset-0 opacity-0 cursor-pointer"
+                  />
+                  <div className="flex flex-col items-center">
+                    <Video className="text-purple-400 mb-2" size={32} />
+                    <p className="text-slate-600 font-medium">
+                      {file ? file.name : 'Click or drag to upload video (MP4, MOV, AVI)'}
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">Max file size: 200MB (transcript will be generated automatically)</p>
+                  </div>
                 </div>
               </div>
             ) : (

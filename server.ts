@@ -10,6 +10,7 @@ import fs from 'fs';
 import JSZip from 'jszip';
 import { GoogleGenAI } from '@google/genai';
 import admin from 'firebase-admin';
+import OpenAI from 'openai';
 import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
 import serviceAccount from './class-room-a05da-firebase-adminsdk-fbsvc-d78f73661e.json' with { type: 'json' };
 
@@ -24,6 +25,7 @@ admin.initializeApp({
 
 const db = new Database('database.db');
 const gemini = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
 // Initialize Database (SQLite for materials, questions, progress)
 db.exec(`
@@ -104,6 +106,21 @@ CREATE TABLE IF NOT EXISTS users (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     is_read INTEGER DEFAULT 0
   );
+
+  CREATE TABLE IF NOT EXISTS transcripts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    material_id INTEGER UNIQUE,
+    staff_id TEXT,
+    video_filename TEXT,
+    transcript_text TEXT,
+    detected_language TEXT,
+    word_count INTEGER,
+    file_path TEXT,
+    processing_status TEXT DEFAULT 'complete',
+    error_message TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(material_id) REFERENCES materials(id)
+  );
 `);
 
 // Lightweight schema migration for existing local databases.
@@ -143,7 +160,7 @@ if (!attemptResultsColumns.some((c) => c.name === 'student_name')) {
 }
 
 // Ensure upload directories exist
-const uploadDirs = ['public/uploads', 'public/uploads/videos', 'public/uploads/images', 'public/uploads/docs', 'public/uploads/zips'];
+const uploadDirs = ['public/uploads', 'public/uploads/videos', 'public/uploads/images', 'public/uploads/docs', 'public/uploads/zips', 'public/uploads/transcripts'];
 uploadDirs.forEach(dir => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -253,6 +270,130 @@ async function restoreAiGeneratedMaterialsFromZip() {
     } catch (error) {
       console.warn(`Skipping AI restore for material ${row.id}:`, error);
     }
+  }
+}
+
+// ===== TRANSCRIPTION UTILITIES =====
+
+async function extractAudioFromVideo(videoPath: string): Promise<Buffer> {
+  try {
+    const ffmpeg = await import('fluent-ffmpeg');
+    return new Promise((resolve, reject) => {
+      const outputPath = path.join(path.dirname(videoPath), `${Date.now()}-audio.wav`);
+      ffmpeg.default(videoPath)
+        .noVideo()
+        .audioCodec('pcm_s16le')
+        .audioFrequency(16000)
+        .audioChannels(1)
+        .format('wav')
+        .on('error', reject)
+        .on('end', async () => {
+          try {
+            const audioBuffer = await fs.promises.readFile(outputPath);
+            await fs.promises.unlink(outputPath).catch(() => undefined);
+            resolve(audioBuffer);
+          } catch (err) {
+            reject(err);
+          }
+        })
+        .save(outputPath);
+    });
+  } catch (error) {
+    console.error('FFmpeg audio extraction error:', error);
+    throw new Error(`Failed to extract audio from video: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function transcribeAudioWithWhisper(audioBuffer: Buffer, _language?: string): Promise<{ text: string; language: string }> {
+  if (!openai) {
+    throw new Error('OpenAI API key not configured');
+  }
+
+  try {
+    const response = await openai.audio.transcriptions.create({
+      file: new File([audioBuffer], 'audio.wav', { type: 'audio/wav' }),
+      model: 'whisper-1',
+      language: undefined,
+    } as Parameters<typeof openai.audio.transcriptions.create>[0]);
+
+    const text = response.text || '';
+    const detectedLanguage = 'en';
+
+    if (!text) {
+      throw new Error('Empty transcript received from Whisper API');
+    }
+
+    return { text, language: detectedLanguage };
+  } catch (error) {
+    console.error('Whisper transcription error:', error);
+    throw new Error(`Transcription failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function processVideoForTranscript(
+  videoFilePath: string,
+  materialId: number,
+  staffId: string,
+  topic: string
+): Promise<{ transcriptPath: string; detectedLanguage: string; wordCount: number }> {
+  try {
+    console.log(`[Transcription] Starting for material ${materialId}`);
+
+    const videoAbsolutePath = path.resolve('public', videoFilePath.replace(/^\//, ''));
+    if (!fs.existsSync(videoAbsolutePath)) {
+      throw new Error(`Video file not found: ${videoAbsolutePath}`);
+    }
+
+    console.log(`[Transcription] Extracting audio from ${videoAbsolutePath}`);
+    const audioBuffer = await extractAudioFromVideo(videoAbsolutePath);
+
+    console.log(`[Transcription] Transcribing audio (${(audioBuffer.length / 1024 / 1024).toFixed(2)}MB)`);
+    const { text, language } = await transcribeAudioWithWhisper(audioBuffer);
+
+    const wordCount = text.split(/\s+/).length;
+    const safeTopicName = topic
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]+/g, '-')
+      .replace(/^-+|-+$/g, '') || `material-${materialId}`;
+
+    const transcriptFileName = `${safeTopicName}_transcript.txt`;
+    const transcriptPath = `/uploads/transcripts/${transcriptFileName}`;
+    const transcriptAbsolutePath = path.resolve('public', transcriptPath.replace(/^\//, ''));
+
+    await fs.promises.writeFile(transcriptAbsolutePath, text, 'utf-8');
+    console.log(`[Transcription] Saved transcript to ${transcriptAbsolutePath}`);
+
+    db.prepare(`
+      INSERT INTO transcripts (material_id, staff_id, video_filename, transcript_text, detected_language, word_count, file_path, processing_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'complete')
+      ON CONFLICT(material_id) DO UPDATE SET
+        transcript_text = excluded.transcript_text,
+        detected_language = excluded.detected_language,
+        word_count = excluded.word_count,
+        file_path = excluded.file_path,
+        processing_status = 'complete'
+    `).run(materialId, staffId, path.basename(videoFilePath), text, language, wordCount, transcriptPath);
+
+    console.log(`[Transcription] Complete for material ${materialId} - ${wordCount} words detected in ${language}`);
+
+    return { transcriptPath, detectedLanguage: language, wordCount };
+  } catch (error) {
+    console.error(`[Transcription] Error for material ${materialId}:`, error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    try {
+      db.prepare(`
+        INSERT INTO transcripts (material_id, staff_id, processing_status, error_message)
+        VALUES (?, ?, 'failed', ?)
+        ON CONFLICT(material_id) DO UPDATE SET
+          processing_status = 'failed',
+          error_message = excluded.error_message
+      `).run(materialId, staffId, errorMessage);
+    } catch (dbErr) {
+      console.error(`[Transcription] Failed to save error status:`, dbErr);
+    }
+
+    throw error;
   }
 }
 
@@ -566,43 +707,51 @@ const repairMissingStudentNames = async () => {
     try {
       let filePath = req.file ? `/uploads/${req.file.destination.split('/').pop()}/${req.file.filename}` : link;
       let storedResourceType = resource_type;
+      let transcriptionWarning: string | null = null;
+      let materialId: number | null = null;
 
       if (req.file) {
         const requestedType = String(resource_type || '').toUpperCase();
-        if (requestedType === 'AI_GENERATED') {
+
+        // Handle staff_video: no auto-zip, just store the video file
+        if (requestedType === 'STAFF_VIDEO') {
+          filePath = `/uploads/videos/${req.file.filename}`;
+          storedResourceType = 'staff_video';
+        } else if (requestedType === 'AI_GENERATED') {
           filePath = `/uploads/${req.file.destination.split('/').pop()}/${req.file.filename}`;
           storedResourceType = 'AI_GENERATED';
         } else {
-        const originalName = String(req.file.originalname || 'material');
-        const isZipUpload = originalName.toLowerCase().endsWith('.zip') || String(req.file.mimetype || '').includes('zip');
+          // Auto-zip for other file types
+          const originalName = String(req.file.originalname || 'material');
+          const isZipUpload = originalName.toLowerCase().endsWith('.zip') || String(req.file.mimetype || '').includes('zip');
 
-        if (isZipUpload) {
-          storedResourceType = 'zip';
-        } else {
-          const sourcePath = path.resolve(req.file.path);
-          const fileBuffer = await fs.promises.readFile(sourcePath);
-          const zip = new JSZip();
-          zip.file(originalName, fileBuffer);
+          if (isZipUpload) {
+            storedResourceType = 'zip';
+          } else {
+            const sourcePath = path.resolve(req.file.path);
+            const fileBuffer = await fs.promises.readFile(sourcePath);
+            const zip = new JSZip();
+            zip.file(originalName, fileBuffer);
 
-          const zipFileName = `${Date.now()}-${path.parse(originalName).name}.zip`;
-          const zipAbsolutePath = path.resolve('public', 'uploads', 'zips', zipFileName);
-          const zipBuffer = await zip.generateAsync({
-            type: 'nodebuffer',
-            compression: 'DEFLATE',
-            compressionOptions: { level: 9 },
-          });
+            const zipFileName = `${Date.now()}-${path.parse(originalName).name}.zip`;
+            const zipAbsolutePath = path.resolve('public', 'uploads', 'zips', zipFileName);
+            const zipBuffer = await zip.generateAsync({
+              type: 'nodebuffer',
+              compression: 'DEFLATE',
+              compressionOptions: { level: 9 },
+            });
 
-          await fs.promises.writeFile(zipAbsolutePath, zipBuffer);
-          // Remove original uploaded file after successful compression.
-          await fs.promises.unlink(sourcePath).catch(() => undefined);
+            await fs.promises.writeFile(zipAbsolutePath, zipBuffer);
+            await fs.promises.unlink(sourcePath).catch(() => undefined);
 
-          filePath = `/uploads/zips/${zipFileName}`;
-          storedResourceType = 'zip';
-        }
+            filePath = `/uploads/zips/${zipFileName}`;
+            storedResourceType = 'zip';
+          }
         }
       }
 
-db.prepare('INSERT INTO materials (staff_id, department, subject, topic, description, file_path, resource_type) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+      const stmt = db.prepare('INSERT INTO materials (staff_id, department, subject, topic, description, file_path, resource_type) VALUES (?, ?, ?, ?, ?, ?, ?)');
+      const result = stmt.run(
         req.user.id,
         staffDepartment,
         subject,
@@ -612,8 +761,23 @@ db.prepare('INSERT INTO materials (staff_id, department, subject, topic, descrip
         storedResourceType
       );
 
+      materialId = result.lastInsertRowid as number;
+
+      // If staff_video, trigger transcription asynchronously
+      if (storedResourceType === 'staff_video' && materialId) {
+        setImmediate(async () => {
+          try {
+            await processVideoForTranscript(filePath, materialId, req.user.id, topic);
+            console.log(`[API] Transcription succeeded for material ${materialId}`);
+          } catch (transcriptionError) {
+            console.error(`[API] Transcription failed for material ${materialId}:`, transcriptionError);
+            transcriptionWarning = transcriptionError instanceof Error ? transcriptionError.message : String(transcriptionError);
+          }
+        });
+      }
+
       // Create notification for students in the same department
-      const notificationTitle = `New ${storedResourceType === 'AI_GENERATED' ? 'AI Study Material' : 'Material'} Added`;
+      const notificationTitle = `New ${storedResourceType === 'AI_GENERATED' ? 'AI Study Material' : storedResourceType === 'staff_video' ? 'Video Lecture' : 'Material'} Added`;
       const notificationMessage = `${topic} - ${subject}`;
       db.prepare('INSERT INTO notifications (department, type, title, message, staff_id) VALUES (?, ?, ?, ?, ?)').run(
         staffDepartment,
@@ -623,7 +787,11 @@ db.prepare('INSERT INTO materials (staff_id, department, subject, topic, descrip
         req.user.id
       );
 
-      res.json({ message: 'Material uploaded' });
+      const response: any = { message: 'Material uploaded' };
+      if (transcriptionWarning) {
+        response.warning = `Video uploaded but transcription will be processed in the background: ${transcriptionWarning}`;
+      }
+      res.json(response);
     } catch (err) {
       console.error('Database error saving material:', err);
       res.status(500).json({ error: 'Failed to save material to database' });
@@ -1109,6 +1277,72 @@ res.json({ message: 'All notifications marked as read' });
         console.error('Failed to create zip download:', error);
         res.status(500).json({ error: 'Failed to prepare download' });
       });
+  });
+
+  // Download video file (not zipped, for staff_video resource type)
+  app.get('/api/student/materials/:id/download-video', authenticateToken, (req: any, res) => {
+    if (req.user.role !== 'student') return res.sendStatus(403);
+
+    try {
+      const material = db.prepare('SELECT id, subject, topic, file_path, resource_type FROM materials WHERE id = ?').get(req.params.id) as any;
+      if (!material) return res.status(404).json({ error: 'Material not found' });
+      if (material.resource_type !== 'staff_video') return res.status(400).json({ error: 'This material is not a video' });
+
+      const filePath = String(material.file_path || '');
+      if (!filePath) return res.status(400).json({ error: 'No file available for download' });
+
+      const uploadsRoot = path.resolve(process.cwd(), 'public', 'uploads');
+      const resolvedPath = path.resolve(process.cwd(), 'public', filePath.replace(/^\//, ''));
+
+      if (!resolvedPath.startsWith(uploadsRoot)) {
+        return res.status(400).json({ error: 'Invalid file path' });
+      }
+
+      if (!fs.existsSync(resolvedPath)) {
+        return res.status(404).json({ error: 'Video file not found' });
+      }
+
+      db.prepare('INSERT INTO material_access (student_id, material_id) VALUES (?, ?)').run(req.user.id, req.params.id);
+      return res.download(resolvedPath, path.basename(resolvedPath));
+    } catch (error) {
+      console.error('Video download error:', error);
+      res.status(500).json({ error: 'Failed to download video' });
+    }
+  });
+
+  // Download transcript as text file
+  app.get('/api/student/materials/:id/transcript', authenticateToken, (req: any, res) => {
+    if (req.user.role !== 'student') return res.sendStatus(403);
+
+    try {
+      const material = db.prepare('SELECT id, topic FROM materials WHERE id = ?').get(req.params.id) as any;
+      if (!material) return res.status(404).json({ error: 'Material not found' });
+
+      const transcript = db.prepare('SELECT file_path, transcript_text FROM transcripts WHERE material_id = ?').get(req.params.id) as any;
+      if (!transcript) return res.status(404).json({ error: 'Transcript not available for this material' });
+
+      const transcriptPath = String(transcript.file_path || '');
+      if (!transcriptPath) return res.status(400).json({ error: 'Transcript path not found' });
+
+      const uploadsRoot = path.resolve(process.cwd(), 'public', 'uploads');
+      const resolvedPath = path.resolve(process.cwd(), 'public', transcriptPath.replace(/^\//, ''));
+
+      if (!resolvedPath.startsWith(uploadsRoot)) {
+        return res.status(400).json({ error: 'Invalid file path' });
+      }
+
+      if (!fs.existsSync(resolvedPath)) {
+        return res.status(404).json({ error: 'Transcript file not found' });
+      }
+
+      db.prepare('INSERT INTO material_access (student_id, material_id) VALUES (?, ?)').run(req.user.id, req.params.id);
+
+      const filename = `${String(material.topic || 'transcript').replace(/[^a-z0-9-_]/gi, '-')}_transcript.txt`;
+      return res.download(resolvedPath, filename);
+    } catch (error) {
+      console.error('Transcript download error:', error);
+      res.status(500).json({ error: 'Failed to download transcript' });
+    }
   });
 
   app.get('/api/student/questions', authenticateToken, async (req: any, res) => {
