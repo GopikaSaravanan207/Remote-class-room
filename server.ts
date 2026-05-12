@@ -276,6 +276,36 @@ async function restoreAiGeneratedMaterialsFromZip() {
 // ===== TRANSCRIPTION UTILITIES =====
 
 async function extractAudioFromVideo(videoPath: string): Promise<Buffer> {
+  // Ensure fluent-ffmpeg can find ffmpeg in environments where PATH differs.
+  try {
+    const ffmpegModule: any = await import('fluent-ffmpeg');
+    const ffmpegFn: any = ffmpegModule?.default || ffmpegModule;
+
+    // Ensure ffmpeg binary is discoverable. If PATH is different between dev shells
+    // and the server process, this keeps transcription reliable.
+    const possibleFfmpegPath = [
+      'C:\\Users\\gopik\\AppData\\Local\\Microsoft\\WinGet\\Links\\ffmpeg.exe',
+      // Common defaults (kept as fallbacks)
+      'C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe',
+      'C:\\ffmpeg\\bin\\ffmpeg.exe',
+      'C:\\Windows\\ffmpeg\\bin\\ffmpeg.exe',
+    ];
+
+    const foundPath = possibleFfmpegPath.find((p) => fs.existsSync(p));
+    if (foundPath && typeof ffmpegFn?.setFfmpegPath === 'function') {
+      ffmpegFn.setFfmpegPath(foundPath);
+      console.log('[ffmpeg] setFfmpegPath ->', foundPath);
+    } else {
+      console.warn('[ffmpeg] ffmpeg binary not found at known locations; fluent-ffmpeg will use PATH');
+    }
+  } catch {
+    // ignore; fluent-ffmpeg will attempt to use PATH
+  }
+
+
+
+  
+
   try {
     const ffmpeg = await import('fluent-ffmpeg');
     return new Promise((resolve, reject) => {
@@ -306,17 +336,22 @@ async function extractAudioFromVideo(videoPath: string): Promise<Buffer> {
 
 async function transcribeAudioWithWhisper(audioBuffer: Buffer, _language?: string): Promise<{ text: string; language: string }> {
   if (!openai) {
-    throw new Error('OpenAI API key not configured');
+    throw new Error('OpenAI API key not configured. Set OPENAI_API_KEY in your environment.');
   }
 
   try {
-    const response = await openai.audio.transcriptions.create({
-      file: new File([audioBuffer], 'audio.wav', { type: 'audio/wav' }),
-      model: 'whisper-1',
-      language: undefined,
-    } as Parameters<typeof openai.audio.transcriptions.create>[0]);
+    // Use a temporary file because the OpenAI SDK expects a file-like object.
+    const audioFilePath = path.join(path.dirname(process.cwd()), `audio-${Date.now()}.wav`);
+    await fs.promises.writeFile(audioFilePath, audioBuffer);
 
-    const text = response.text || '';
+    const response: any = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(audioFilePath),
+      model: 'whisper-1',
+    });
+
+    await fs.promises.unlink(audioFilePath).catch(() => undefined);
+
+    const text = String(response?.text ?? '').trim();
     const detectedLanguage = 'en';
 
     if (!text) {
@@ -713,7 +748,7 @@ const repairMissingStudentNames = async () => {
       if (req.file) {
         const requestedType = String(resource_type || '').toUpperCase();
 
-        // Handle staff_video: no auto-zip, just store the video file
+      // Handle staff_video: no auto-zip, just store the video file
         if (requestedType === 'STAFF_VIDEO') {
           filePath = `/uploads/videos/${req.file.filename}`;
           storedResourceType = 'staff_video';
@@ -1318,11 +1353,15 @@ res.json({ message: 'All notifications marked as read' });
       const material = db.prepare('SELECT id, topic FROM materials WHERE id = ?').get(req.params.id) as any;
       if (!material) return res.status(404).json({ error: 'Material not found' });
 
-      const transcript = db.prepare('SELECT file_path, transcript_text FROM transcripts WHERE material_id = ?').get(req.params.id) as any;
+      const transcript = db.prepare('SELECT file_path, transcript_text, processing_status FROM transcripts WHERE material_id = ?').get(req.params.id) as any;
       if (!transcript) return res.status(404).json({ error: 'Transcript not available for this material' });
 
+      if (String(transcript.processing_status || '') !== 'complete') {
+        return res.status(404).json({ error: 'Transcript is not ready yet' });
+      }
+
       const transcriptPath = String(transcript.file_path || '');
-      if (!transcriptPath) return res.status(400).json({ error: 'Transcript path not found' });
+      if (!transcriptPath) return res.status(404).json({ error: 'Transcript is not ready yet' });
 
       const uploadsRoot = path.resolve(process.cwd(), 'public', 'uploads');
       const resolvedPath = path.resolve(process.cwd(), 'public', transcriptPath.replace(/^\//, ''));
